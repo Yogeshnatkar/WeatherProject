@@ -988,10 +988,10 @@ if __name__ == "__main__":
     while True: 
         now = datetime.datetime.now()
         # if now.minute % 5 == 0 and now.second >= 3:
-        # if now.time() < datetime.time(9, 15):
-        #     print(f"⏳ Market not open yet ({now.strftime('%H:%M:%S')}). Waiting...")
-        #     time.sleep(10)
-        #     continue
+        if now.time() < datetime.time(9, 15):
+            print(f"⏳ Market not open yet ({now.strftime('%H:%M:%S')}). Waiting...")
+            time.sleep(10)
+            continue
         
         print(f"🔄  Scan @ {get_ist_now().strftime('%Y-%m-%d %H:%M:%S IST')}")
         download_data()
