@@ -950,7 +950,7 @@ def compute_indicators_and_signals(
 
         if row["BUY_SIGNAL"]:
             signals.append([str(ts), "BUY", round(float(row["Close"]), 2)])
-            if str(ts) not in seen_times and ts.date() == now.date():
+            if str(ts) not in seen_times and ts.date() == now.date()-datetime.timedelta(days=2):
                 seen_times.append(str(ts))
                 signal_dict[symbol] = seen_times
                 last_signal_bar[symbol] = bar_idx
@@ -969,7 +969,7 @@ def compute_indicators_and_signals(
 
         elif row["SELL_SIGNAL"]:
             signals.append([str(ts), "SELL", round(float(row["Close"]), 2)])
-            if str(ts) not in seen_times and ts.date() == now.date():
+            if str(ts) not in seen_times and ts.date() == now.date()-datetime.timedelta(days=2):
                 seen_times.append(str(ts))
                 signal_dict[symbol] = seen_times
                 last_signal_bar[symbol] = bar_idx
@@ -997,10 +997,10 @@ if __name__ == "__main__":
     while True: 
         now = datetime.datetime.now()
         # if now.minute % 5 == 0 and now.second >= 3:
-        if now.time() < datetime.time(9, 15):
-            print(f"⏳ Market not open yet ({now.strftime('%H:%M:%S')}). Waiting...")
-            time.sleep(10)
-            continue
+        # if now.time() < datetime.time(9, 15):
+        #     print(f"⏳ Market not open yet ({now.strftime('%H:%M:%S')}). Waiting...")
+        #     time.sleep(10)
+        #     continue
         
         print(f"🔄  Scan @ {get_ist_now().strftime('%Y-%m-%d %H:%M:%S IST')}")
         download_data()
