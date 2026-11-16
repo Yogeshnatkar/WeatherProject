@@ -247,7 +247,7 @@ def send_telegram_background(message: str) -> None:
 
 def write_trade_log(message: str) -> None:
     with log_lock:
-        with open(f"trade_log_{dt.datetime.now().strftime('%Y-%m-%d')}.txt", "a", encoding="utf-8") as file:
+        with open(f"trade_log_live_{dt.datetime.now().strftime('%Y-%m-%d')}.txt", "a", encoding="utf-8") as file:
             file.write(message + "\n\n")
 
 

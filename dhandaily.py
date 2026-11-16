@@ -136,14 +136,14 @@ DHAN_SYMBOLS = {
     #         "exchange_segment": "NSE_EQ",
     #         "instrument": "EQUITY",
     #     },
-    "OFSS.NS": {
-            "security_id": "10738",
-            "exchange_segment": "NSE_EQ",
-            "instrument": "EQUITY",
-        },
+    # "OFSS.NS": {
+    #         "security_id": "10738",
+    #         "exchange_segment": "NSE_EQ",
+    #         "instrument": "EQUITY",
+    #     },
 }
 
-# DHAN_SYMBOLS=dhan_symbols.DHAN_SYMBOLS
+DHAN_SYMBOLS=dhan_symbols.DHAN_SYMBOLS
 
 def get_ist_now():
     return datetime.datetime.now(
@@ -445,15 +445,6 @@ def download_data():
 
                 processed_count += 1
 
-                if signals:
-                    print(
-                        f"[SIGNALS] {symbol}: {signals}"
-                    )
-                else:
-                    print(
-                        f"[NO SIGNAL] {symbol}"
-                    )
-
             except Exception as exc:
                 print(
                     f"[STRATEGY ERROR] {symbol}: {exc}"
@@ -612,7 +603,7 @@ def place_sandbox_order(transactionType, symbol, quantity):
         except ValueError:
             response_data = {"response_text": response.text}
 
-        print("Parsed Response:", response_data)
+        # print("Parsed Response:", response_data)
 
         if not response.ok:
             print(f"Order rejected for {symbol}")
@@ -680,11 +671,11 @@ def enter_position(symbol: str, side: str, entry_price: float, entry_time) -> No
         f"Entry Time  : {entry_time}\n"
         f"Entry Price : {entry_price:.2f}\n"
         f"Qty         : {qty}\n"
-        f"Value       : {entry_price * qty:,.2f}"
+        f"Value       : {entry_price * qty:,.2f}\n"
         f"Daily Strategy : True"
     )
-    print(msg)
-    with open("trade_log_new.txt1", "a") as f:
+    # print(msg)
+    with open(f"trade_log_daily_{datetime.datetime.now().strftime('%Y-%m-%d')}.txt", "a") as f:
             f.write(msg + "\n\n")
     send_telegram_message_background(msg)
     # start_order_execution_background(transactionType=side,symbol=symbol,quantity=qty)
@@ -727,7 +718,7 @@ def exit_position(symbol: str, exit_price: float, exit_time) -> None:
         f"Closed trades: {len(closed_trades)}\n"
         f"Daily Strategy : True"
     )
-    print(msg)
+    # print(msg)
     with open("trade_log_new.txt1", "a") as f:
         f.write(msg + "\n\n")
     send_telegram_message_background(msg)
@@ -949,8 +940,8 @@ def compute_indicators_and_signals(
             continue
 
         if row["BUY_SIGNAL"]:
-            signals.append([str(ts), "BUY", round(float(row["Close"]), 2)])
-            if str(ts) not in seen_times and ts.date() == now.date()-datetime.timedelta(days=2):
+            # signals.append([str(ts), "BUY", round(float(row["Close"]), 2)])
+            if str(ts) not in seen_times and ts.date() == now.date():
                 seen_times.append(str(ts))
                 signal_dict[symbol] = seen_times
                 last_signal_bar[symbol] = bar_idx
@@ -965,11 +956,11 @@ def compute_indicators_and_signals(
                 #     f"TP     : {row['Open'] + TP_ATR_MULT * row['ATR14']:.2f}  (+{TP_ATR_MULT}×ATR)\n"
                 #     f"SL     : {row['Open'] - SL_ATR_MULT * row['ATR14']:.2f}  (-{SL_ATR_MULT}×ATR)"
                 # )
-            enter_position(symbol, "BUY", float(row["Close"]), ts)
+                enter_position(symbol, "BUY", float(row["Close"]), ts)
 
         elif row["SELL_SIGNAL"]:
-            signals.append([str(ts), "SELL", round(float(row["Close"]), 2)])
-            if str(ts) not in seen_times and ts.date() == now.date()-datetime.timedelta(days=2):
+            # signals.append([str(ts), "SELL", round(float(row["Close"]), 2)])
+            if str(ts) not in seen_times and ts.date() == now.date():
                 seen_times.append(str(ts))
                 signal_dict[symbol] = seen_times
                 last_signal_bar[symbol] = bar_idx
@@ -984,7 +975,7 @@ def compute_indicators_and_signals(
                 #     f"TP     : {row['Open'] - TP_ATR_MULT * row['ATR14']:.2f}  (-{TP_ATR_MULT}×ATR)\n"
                 #     f"SL     : {row['Open'] + SL_ATR_MULT * row['ATR14']:.2f}  (+{SL_ATR_MULT}×ATR)"
                 # )
-            enter_position(symbol, "SELL", float(row["Close"]), ts)
+                enter_position(symbol, "SELL", float(row["Close"]), ts)
 
         bar_idx += 1
     check_exit(symbol,df)
@@ -993,19 +984,19 @@ def compute_indicators_and_signals(
 
 
 if __name__ == "__main__":
-    download_data()
-    # while True: 
-    #     now = datetime.datetime.now()
-    #     # if now.minute % 5 == 0 and now.second >= 3:
-    #     # if now.time() < datetime.time(9, 15):
-    #     #     print(f"⏳ Market not open yet ({now.strftime('%H:%M:%S')}). Waiting...")
-    #     #     time.sleep(10)
-    #     #     continue
+    
+    while True: 
+        now = datetime.datetime.now()
+        # if now.minute % 5 == 0 and now.second >= 3:
+        # if now.time() < datetime.time(9, 15):
+        #     print(f"⏳ Market not open yet ({now.strftime('%H:%M:%S')}). Waiting...")
+        #     time.sleep(10)
+        #     continue
         
-    #     print(f"🔄  Scan @ {get_ist_now().strftime('%Y-%m-%d %H:%M:%S IST')}")
-    #     download_data()
+        print(f"🔄  Scan @ {get_ist_now().strftime('%Y-%m-%d %H:%M:%S IST')}")
+        download_data()
         
-    #     print(f"✅  Next scan in 5 minutes...\n")
-    #     # time.sleep(60)
-    #     # time.sleep(1)
+        print(f"✅  Next scan in 5 minutes...\n")
+        # time.sleep(60)
+        # time.sleep(1)
     
