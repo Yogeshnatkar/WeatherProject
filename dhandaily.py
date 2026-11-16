@@ -981,15 +981,23 @@ def compute_indicators_and_signals(
     check_exit(symbol,df)
     return signals
 
+from zoneinfo import ZoneInfo
+IST = ZoneInfo("Asia/Kolkata")
 
+def get_ist_now() -> datetime.datetime:
+    return datetime.datetime.now(IST)
+
+MARKET_OPEN    = datetime.time(9, 15)
+MARKET_CLOSE   = datetime.time(15, 30)
 
 if __name__ == "__main__":
     
     while True: 
-        now = datetime.datetime.now()
+        now = get_ist_now()
         # if now.minute % 5 == 0 and now.second >= 3:
-        if now.time() < datetime.time(9, 15):
-            print(f"⏳ Market not open yet ({now.strftime('%H:%M:%S')}). Waiting...")
+        # Before market open
+        if now.time() < MARKET_OPEN:
+            print(f"⏳ Market not open yet ({now:%H:%M:%S} IST). Waiting...")
             time.sleep(10)
             continue
         
