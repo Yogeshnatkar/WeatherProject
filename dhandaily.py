@@ -136,14 +136,14 @@ DHAN_SYMBOLS = {
     #         "exchange_segment": "NSE_EQ",
     #         "instrument": "EQUITY",
     #     },
-    # "OFSS.NS": {
-    #         "security_id": "10738",
-    #         "exchange_segment": "NSE_EQ",
-    #         "instrument": "EQUITY",
-    #     },
+    "OFSS.NS": {
+            "security_id": "10738",
+            "exchange_segment": "NSE_EQ",
+            "instrument": "EQUITY",
+        },
 }
 
-DHAN_SYMBOLS=dhan_symbols.DHAN_SYMBOLS
+# DHAN_SYMBOLS=dhan_symbols.DHAN_SYMBOLS
 
 def get_ist_now():
     return datetime.datetime.now(
@@ -965,7 +965,7 @@ def compute_indicators_and_signals(
                 #     f"TP     : {row['Open'] + TP_ATR_MULT * row['ATR14']:.2f}  (+{TP_ATR_MULT}×ATR)\n"
                 #     f"SL     : {row['Open'] - SL_ATR_MULT * row['ATR14']:.2f}  (-{SL_ATR_MULT}×ATR)"
                 # )
-                enter_position(symbol, "BUY", float(row["Close"]), ts)
+            enter_position(symbol, "BUY", float(row["Close"]), ts)
 
         elif row["SELL_SIGNAL"]:
             signals.append([str(ts), "SELL", round(float(row["Close"]), 2)])
@@ -984,7 +984,7 @@ def compute_indicators_and_signals(
                 #     f"TP     : {row['Open'] - TP_ATR_MULT * row['ATR14']:.2f}  (-{TP_ATR_MULT}×ATR)\n"
                 #     f"SL     : {row['Open'] + SL_ATR_MULT * row['ATR14']:.2f}  (+{SL_ATR_MULT}×ATR)"
                 # )
-                enter_position(symbol, "SELL", float(row["Close"]), ts)
+            enter_position(symbol, "SELL", float(row["Close"]), ts)
 
         bar_idx += 1
     check_exit(symbol,df)
@@ -993,19 +993,19 @@ def compute_indicators_and_signals(
 
 
 if __name__ == "__main__":
-    
-    while True: 
-        now = datetime.datetime.now()
-        # if now.minute % 5 == 0 and now.second >= 3:
-        # if now.time() < datetime.time(9, 15):
-        #     print(f"⏳ Market not open yet ({now.strftime('%H:%M:%S')}). Waiting...")
-        #     time.sleep(10)
-        #     continue
+    download_data()
+    # while True: 
+    #     now = datetime.datetime.now()
+    #     # if now.minute % 5 == 0 and now.second >= 3:
+    #     # if now.time() < datetime.time(9, 15):
+    #     #     print(f"⏳ Market not open yet ({now.strftime('%H:%M:%S')}). Waiting...")
+    #     #     time.sleep(10)
+    #     #     continue
         
-        print(f"🔄  Scan @ {get_ist_now().strftime('%Y-%m-%d %H:%M:%S IST')}")
-        download_data()
+    #     print(f"🔄  Scan @ {get_ist_now().strftime('%Y-%m-%d %H:%M:%S IST')}")
+    #     download_data()
         
-        print(f"✅  Next scan in 5 minutes...\n")
-        # time.sleep(60)
-        # time.sleep(1)
+    #     print(f"✅  Next scan in 5 minutes...\n")
+    #     # time.sleep(60)
+    #     # time.sleep(1)
     
