@@ -1,7 +1,7 @@
 import os
 import time
 import uuid
-from fastapi import HTTPException
+
 import httpx
 import requests
 import datetime
@@ -548,43 +548,31 @@ def place_sandbox_order(transactionType, symbol, quantity):
     # print(f"Order placement started: {symbol}")
 
     if not DHAN_Sandbox_ClientId or not DHAN_Sandbox_ACCESS_TOKEN:
-        raise HTTPException(
-            status_code=500,
-            detail="Configure DHAN_Sandbox_ClientId and DHAN_Sandbox_ACCESS_TOKEN."
-        )
+        print("Configure DHAN_Sandbox_ClientId and DHAN_Sandbox_ACCESS_TOKEN.")
 
     # Validate transaction type.
     transactionType = str(transactionType).upper()
 
     if transactionType not in ("BUY", "SELL"):
-        raise HTTPException(
-            status_code=400,
-            detail="transactionType must be BUY or SELL."
-        )
+        print("transactionType must be BUY or SELL.")
 
     # Validate quantity.
     try:
         quantity = int(quantity)
     except (ValueError, TypeError):
-        raise HTTPException(
-            status_code=400,
-            detail="Quantity must be a positive integer."
-        )
+        print("Quantity must be a positive integer.")
+        
 
     if quantity <= 0:
-        raise HTTPException(
-            status_code=400,
-            detail="Quantity must be greater than zero."
-        )
+        print("Quantity must be greater than zero.")
+        
 
     # Validate symbol.
     symbol_info = DHAN_SYMBOLS.get(symbol)
 
     if not symbol_info:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Symbol {symbol} not found in DHAN_SYMBOLS."
-        )
+        print(f"Symbol {symbol} not found in DHAN_SYMBOLS.")
+        return
 
     # Build the order payload.
     payload = {
@@ -628,16 +616,8 @@ def place_sandbox_order(transactionType, symbol, quantity):
 
         if not response.ok:
             print(f"Order rejected for {symbol}")
-            raise HTTPException(
-                status_code=response.status_code,
-                detail={
-                    "message": "Dhan Sandbox rejected the order.",
-                    "symbol": symbol,
-                    "status_code": response.status_code,
-                    "response": response_data,
-                    "request_payload": payload,
-                },
-            )
+            print("Response:", response_data)
+            
 
 
         return {
@@ -647,30 +627,18 @@ def place_sandbox_order(transactionType, symbol, quantity):
             "response": response_data,
         }
 
-    except HTTPException:
-        # Preserve the original FastAPI exception.
-        raise
 
     except requests.exceptions.Timeout:
         print(f"Request timed out for {symbol}.")
-        raise HTTPException(
-            status_code=504,
-            detail="Dhan Sandbox request timed out. Check order status before retrying."
-        )
+        
 
     except requests.exceptions.RequestException as exc:
         print(f"Connection error for {symbol}: {exc}")
-        raise HTTPException(
-            status_code=502,
-            detail=f"Could not connect to Dhan Sandbox: {exc}"
-        )
+        
 
     except Exception as exc:
         print(f"Unexpected error for {symbol}: {exc}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Unexpected order placement error: {exc}"
-        )
+        
         
 # Telegram messages execute in background threads.
 ORDER_EXECUTOR = ThreadPoolExecutor(
