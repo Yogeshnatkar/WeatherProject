@@ -1131,30 +1131,30 @@ def check_exit_for_symbol(symbol: str, bucket) -> None:
 
     candles = candles.sort_values("Datetime").reset_index(drop=True)
 
-    # Keep only closed candles: those that start before the current bucket
-    bucket_ts = as_ist_timestamp(bucket)
-    candles = candles[
-        candles["Datetime"].apply(as_ist_timestamp) < bucket_ts
-    ].reset_index(drop=True)
+    # # Keep only closed candles: those that start before the current bucket
+    # bucket_ts = as_ist_timestamp(bucket)
+    # candles = candles[
+    #     candles["Datetime"].apply(as_ist_timestamp) < bucket_ts
+    # ].reset_index(drop=True)
 
-    # The candle that just closed must be present, otherwise API is lagging
-    expected_last = bucket_ts - pd.Timedelta(minutes=EXIT_CANDLE_MINUTES)
-    have_expected = (
-        not candles.empty
-        and as_ist_timestamp(candles["Datetime"].iloc[-1]) >= expected_last
-    )
-    secs_since_bucket = (
-        as_ist_timestamp(get_ist_now()) - bucket_ts
-    ).total_seconds()
+    # # The candle that just closed must be present, otherwise API is lagging
+    # expected_last = bucket_ts - pd.Timedelta(minutes=EXIT_CANDLE_MINUTES)
+    # have_expected = (
+    #     not candles.empty
+    #     and as_ist_timestamp(candles["Datetime"].iloc[-1]) >= expected_last
+    # )
+    # secs_since_bucket = (
+    #     as_ist_timestamp(get_ist_now()) - bucket_ts
+    # ).total_seconds()
 
-    if not have_expected and secs_since_bucket < 60:
-        # API probably lagging: retry for up to ~60s after the boundary
-        exit_retry_at[symbol] = time.monotonic() + EXIT_RETRY_SECONDS
-        return
+    # if not have_expected and secs_since_bucket < 60:
+    #     # API probably lagging: retry for up to ~60s after the boundary
+    #     exit_retry_at[symbol] = time.monotonic() + EXIT_RETRY_SECONDS
+    #     return
 
-    exit_retry_at.pop(symbol, None)
-    if len(candles) < 2:
-        return
+    # exit_retry_at.pop(symbol, None)
+    # if len(candles) < 2:
+    #     return
 
     for position_key, pos in positions:
         entry_ts = as_ist_timestamp(pos["entry_time"])
