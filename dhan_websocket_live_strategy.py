@@ -1,6 +1,12 @@
 """
 Dhan WebSocket live-candle scanner  (patched / hardened version)
 ----------------------------------------------------------------
+CHANGE IN THIS VERSION:
+  Signals are generated ONLY after a 15-minute candle has fully closed.
+  The candle close is detected when the first tick of the next 15m bucket
+  arrives; the signal logic is then evaluated once on the completed candle.
+  (Search for "CLOSED-CANDLE" to find every changed spot.)
+
 UNCHANGED strategy logic (same as the uploaded version):
   - Indicator formulas in add_indicators()
   - BUY / SELL signal conditions
@@ -9,33 +15,21 @@ UNCHANGED strategy logic (same as the uploaded version):
                SELL exits when current 5m Close > previous 5m Open
   - Quantity slabs
 
-FIXES in this version:
-  1. Tick time: candles are bucketed by wall-clock receive time by default
-     (Dhan's LTT is a bare "HH:MM:SS" string whose timezone is ambiguous).
-     Optional LTT use is guarded by a drift check.
-  2. Performance: signal evaluation is throttled per symbol, runs in worker
-     threads (not inside the SDK receive loop), uses a tail window of history,
-     and the day-volume offset is maintained incrementally.
-  3. Session filter: ticks outside 09:15-15:30 IST are ignored, new entries
-     stop at ENTRY_CUTOFF, and everything open is squared off at
-     SQUARE_OFF_TIME (a watchdog thread does this even if ticks stop).
-     Optional ATR SL/TP exists but is OFF by default (USE_ATR_SL_TP=False),
-     so the exit logic stays exactly as uploaded.
-  4. Historical/5m API calls use full datetime strings, with retry/backoff
-     on 429/5xx. Startup prints sanity warnings about timestamps.
-  5. Thread safety: open_positions / totals / closed_trades are accessed
-     under a lock. Exit checks cannot overlap per symbol and retry shortly
-     if the REST candle is not published yet.
+Other features:
+  1. Tick time: candles are bucketed by wall-clock receive time by default.
+  2. Signal evaluation runs in worker threads (not inside the SDK loop).
+  3. Session filter: ticks outside 09:15-15:30 IST ignored, entries stop at
+     ENTRY_CUTOFF, everything squared off at SQUARE_OFF_TIME (watchdog).
+  4. Historical/5m API calls use full datetime strings, retry/backoff.
+  5. Thread safety via state_lock.
   6. No stacked positions in the same symbol (ALLOW_STACKING=False).
   7. Exit price/time use the live LTP/now at the moment the exit fires.
 
 IMPORTANT:
-  - Set credentials via environment variables only.
   - Keep PAPER_MODE=True until you have verified signals and fills.
   - Needs dhan_symbols.py with DHAN_SYMBOLS:
       {"SYMBOL": {"security_id": "...", "exchange_segment": "NSE_EQ",
                   "instrument": "EQUITY"}}
-  - Intrabar signals can reverse before the 15-minute candle closes.
 """
 
 import os
@@ -96,21 +90,21 @@ SESSION_START = dt.time(9, 15)
 SESSION_END = dt.time(15, 30)
 ENTRY_CUTOFF = dt.time(15, 0)        # no new entries at/after this; None = off
 SQUARE_OFF_TIME = dt.time(15, 15)    # force-exit everything at/after this
+# NOTE: a signal on the 14:45-15:00 candle is evaluated at 15:00, which equals
+# ENTRY_CUTOFF, so it is blocked. Set ENTRY_CUTOFF = dt.time(15, 5) to allow it.
 
 # ---- Tick time handling ----
-# False (recommended): bucket candles by wall-clock receive time.
-# True: try Dhan's LTT, but only if it lands within MAX_TICK_DRIFT_SECONDS of
-#       the wall clock under an IST or UTC interpretation; else use wall clock.
 USE_EXCHANGE_LTT = False
 MAX_TICK_DRIFT_SECONDS = 120
 
 # ---- Performance ----
-SIGNAL_EVAL_INTERVAL = 0.43          # min seconds between evaluations / symbol
 INDICATOR_TAIL_ROWS = 600            # history rows used for indicators
 WORKERS_SIGNAL = 4
+MAX_SIGNAL_DELAY_SECONDS = 60        # CLOSED-CANDLE: skip signal if the closed
+                                     # candle is processed later than this
 
 # ---- Exits ----
-EXIT_RETRY_SECONDS = 20              # retry if 5m REST candles not ready yet
+EXIT_RETRY_SECONDS = 20
 ALLOW_STACKING = False               # False = max 1 open position per symbol
 USE_ATR_SL_TP = False                # OFF = exit logic identical to upload
 
@@ -160,10 +154,8 @@ completed_vol_date: dict[str, dt.date] = {}
 last_signal_candle: dict[str, pd.Timestamp] = {}
 acted_signal_candles: dict[str, set[str]] = {}
 
-# Signal evaluation throttling
-eval_inflight: set[str] = set()
-last_eval_mono: dict[str, float] = {}
-last_eval_sig: dict[str, tuple] = {}
+# (CLOSED-CANDLE: eval_inflight / last_eval_mono / last_eval_sig removed;
+#  no per-tick throttling is needed any more.)
 
 # Exit polling
 last_exit_bucket: dict[str, pd.Timestamp] = {}
@@ -258,8 +250,6 @@ def get_quantity(price: float) -> int:
     elif price < 3000:
         return 100
     return 25
-
-
 
 
 def normalize_history(df: pd.DataFrame) -> pd.DataFrame:
@@ -586,47 +576,49 @@ def symbol_has_open_position(symbol: str) -> bool:
         return any(p["symbol"] == symbol for p in open_positions.values())
 
 
-def process_live_signal(symbol: str) -> None:
+# ============================================================
+# CLOSED-CANDLE SIGNAL EVALUATION  (CHANGED)
+# ============================================================
+
+def process_closed_candle_signal(
+    symbol: str,
+    closed_bucket: pd.Timestamp,
+    trigger_ltp: float,
+) -> None:
     """
-    Recalculates the unchanged strategy on the latest live candle.
-    Heavy pandas work happens outside the lock on a snapshot; the decision
-    to act (dedupe / cooldown / mark) is made atomically under the lock.
+    Runs ONCE per symbol per 15m candle, right after that candle closes.
+    Strategy logic is identical; it is just evaluated on the completed candle
+    (the last row of market_frames) instead of the forming candle.
     """
     now = get_ist_now()
     if not entry_allowed(now):
         return
 
-    # ---- snapshot under lock ----
-    with state_lock:
-        hist = market_frames.get(symbol)
-        forming = forming_candles.get(symbol)
-
-        if hist is None or forming is None or forming["Open"] is None:
-            return
-
-        current_row = {
-            "Datetime": forming["bucket"],
-            "Open": forming["Open"],
-            "High": forming["High"],
-            "Low": forming["Low"],
-            "Close": forming["Close"],
-            "Volume": forming["Volume"],
-        }
-        hist_tail = hist.tail(INDICATOR_TAIL_ROWS)
-        # hist_tail = hist.copy()
-        live_price = float(forming["Close"])
-
-    # ---- heavy compute outside lock ----
-    combined = pd.concat(
-        [hist_tail, pd.DataFrame([current_row])],
-        ignore_index=True,
-    )
-    combined = combined.drop_duplicates("Datetime", keep="last").reset_index(drop=True)
-
-    if len(combined) < max(EMA_REGIME, ROLLING_SWING, ATR_PERIOD) + 20:
+    # Guard: don't act on a stale candle (e.g. illiquid stock whose next
+    # tick arrived late).
+    candle_close_time = closed_bucket + pd.Timedelta(minutes=CANDLE_MINUTES)
+    delay = (pd.Timestamp(now) - candle_close_time).total_seconds()
+    if delay > MAX_SIGNAL_DELAY_SECONDS:
+        print(
+            f"[SKIP] {symbol}: candle {closed_bucket:%H:%M} closed "
+            f"{delay:.0f}s ago, too stale"
+        )
         return
 
-    calculated = add_indicators(combined)
+    with state_lock:
+        hist = market_frames.get(symbol)
+        if hist is None or hist.empty:
+            return
+        hist_tail = hist.tail(INDICATOR_TAIL_ROWS).copy()
+
+    # The last row must be the candle that just closed.
+    if as_ist_timestamp(hist_tail["Datetime"].iloc[-1]) != closed_bucket:
+        return
+
+    if len(hist_tail) < max(EMA_REGIME, ROLLING_SWING, ATR_PERIOD) + 20:
+        return
+
+    calculated = add_indicators(hist_tail)
     latest = calculated.iloc[-1]
 
     candle_bucket = as_ist_timestamp(latest["Datetime"])
@@ -654,17 +646,18 @@ def process_live_signal(symbol: str) -> None:
 
     side = "BUY" if buy else "SELL"
     signal_time = get_ist_now()
-    entry_price = live_price
+    entry_price = latest_price(symbol, trigger_ltp)   # LTP right after candle close
     entry_atr = float(latest["ATR14"]) if pd.notna(latest["ATR14"]) else None
 
     create_beep_sound()
 
     msg = (
-        f"📡 LIVE {side} SIGNAL\n"
+        f"📡 {side} SIGNAL (15m candle closed)\n"
         f"Symbol       : {symbol}\n"
-        f"Candle Start : {candle_bucket}\n"
+        f"Candle       : {candle_bucket:%H:%M} - {candle_close_time:%H:%M}\n"
+        f"Candle Close : ₹{float(latest['Close']):.2f}\n"
         f"Signal Time  : {signal_time:%Y-%m-%d %H:%M:%S %Z}\n"
-        f"Live LTP     : ₹{entry_price:.2f}\n"
+        f"Entry LTP    : ₹{entry_price:.2f}\n"
         f"RSI          : {latest['RSI14']:.2f}\n"
         f"ATR          : {latest['ATR14']:.2f}\n"
         f"Volume       : {latest['Volume']:.0f}\n"
@@ -683,38 +676,24 @@ def process_live_signal(symbol: str) -> None:
     )
 
 
-def schedule_signal_eval(symbol: str) -> None:
-    """Throttled, non-blocking evaluation (never runs inside the WS loop)."""
-    now_m = time.monotonic()
-    with state_lock:
-        if symbol in eval_inflight:
-            return
-        if now_m - last_eval_mono.get(symbol, 0.0) < SIGNAL_EVAL_INTERVAL:
-            return
-
-        f = forming_candles.get(symbol)
-        if f is None or f["Open"] is None:
-            return
-
-        sig = (f["High"], f["Low"], f["Close"], f["Volume"])
-        if last_eval_sig.get(symbol) == sig:
-            return
-
-        last_eval_sig[symbol] = sig
-        last_eval_mono[symbol] = now_m
-        eval_inflight.add(symbol)
-
-    SIGNAL_EXECUTOR.submit(_signal_worker, symbol)
+def schedule_candle_close_eval(
+    symbol: str,
+    closed_bucket: pd.Timestamp,
+    trigger_ltp: float,
+) -> None:
+    """Fire-and-forget; never runs inside the WS receive loop."""
+    SIGNAL_EXECUTOR.submit(_signal_worker, symbol, closed_bucket, trigger_ltp)
 
 
-def _signal_worker(symbol: str) -> None:
+def _signal_worker(
+    symbol: str,
+    closed_bucket: pd.Timestamp,
+    trigger_ltp: float,
+) -> None:
     try:
-        process_live_signal(symbol)
+        process_closed_candle_signal(symbol, closed_bucket, trigger_ltp)
     except Exception as exc:
         print(f"[SIGNAL ERROR] {symbol}: {exc}")
-    finally:
-        with state_lock:
-            eval_inflight.discard(symbol)
 
 
 # ============================================================
@@ -734,22 +713,25 @@ def update_live_candle(
     ltp: float,
     cumulative_day_volume: Optional[int],
     tick_time: dt.datetime,
-) -> None:
+) -> Optional[pd.Timestamp]:                      # CLOSED-CANDLE: returns closed bucket
     """
     Build OHLC from WebSocket LTP updates.
     Quote volume is cumulative day volume, so:
         candle volume = cumulative day volume - completed candle volume today
-    (the completed-volume offset is maintained incrementally).
+
+    Returns the bucket (start time) of the 15m candle that was just finalized
+    by this tick, or None if no candle closed.
     """
     if ltp <= 0:
-        return
+        return None
 
     tick_ts = as_ist_timestamp(tick_time)
     bucket = floor_time(tick_ts, CANDLE_MINUTES)
+    closed_bucket: Optional[pd.Timestamp] = None  # CLOSED-CANDLE
 
     with state_lock:
         if symbol not in forming_candles:
-            return
+            return None
 
         state = forming_candles[symbol]
 
@@ -772,8 +754,8 @@ def update_live_candle(
                 )
                 frame = normalize_history(frame)
                 market_frames[symbol] = frame.tail(1500).reset_index(drop=True)
-                # market_frames[symbol] = frame.reset_index(drop=True)
                 add_completed_volume(symbol, old_bucket, state["Volume"])
+                closed_bucket = old_bucket        # CLOSED-CANDLE
 
             forming_candles[symbol] = {
                 "bucket": bucket,
@@ -789,7 +771,7 @@ def update_live_candle(
 
         # Ignore late/out-of-order ticks from an older candle.
         if bucket < state["bucket"]:
-            return
+            return closed_bucket
 
         if state["Open"] is None:
             state["Open"] = float(ltp)
@@ -816,6 +798,8 @@ def update_live_candle(
                 float(state.get("seed_volume", 0.0)),
                 derived_current_volume,
             )
+
+    return closed_bucket                          # CLOSED-CANDLE
 
 
 def latest_price(symbol: str, fallback: float) -> float:
@@ -1024,8 +1008,8 @@ def check_sl_tp(symbol: str, ltp: float) -> None:
             reason = "SL" if ltp >= sl else "TP" if ltp <= tp else None
         if reason:
             exit_position(key, ltp, get_ist_now(), reason)
-            
-            
+
+
 def session_watchdog() -> None:
     """Squares off all open positions at SQUARE_OFF_TIME, even if ticks stop."""
     while True:
@@ -1131,31 +1115,6 @@ def check_exit_for_symbol(symbol: str, bucket) -> None:
 
     candles = candles.sort_values("Datetime").reset_index(drop=True)
 
-    # # Keep only closed candles: those that start before the current bucket
-    # bucket_ts = as_ist_timestamp(bucket)
-    # candles = candles[
-    #     candles["Datetime"].apply(as_ist_timestamp) < bucket_ts
-    # ].reset_index(drop=True)
-
-    # # The candle that just closed must be present, otherwise API is lagging
-    # expected_last = bucket_ts - pd.Timedelta(minutes=EXIT_CANDLE_MINUTES)
-    # have_expected = (
-    #     not candles.empty
-    #     and as_ist_timestamp(candles["Datetime"].iloc[-1]) >= expected_last
-    # )
-    # secs_since_bucket = (
-    #     as_ist_timestamp(get_ist_now()) - bucket_ts
-    # ).total_seconds()
-
-    # if not have_expected and secs_since_bucket < 60:
-    #     # API probably lagging: retry for up to ~60s after the boundary
-    #     exit_retry_at[symbol] = time.monotonic() + EXIT_RETRY_SECONDS
-    #     return
-
-    # exit_retry_at.pop(symbol, None)
-    # if len(candles) < 2:
-    #     return
-
     for position_key, pos in positions:
         entry_ts = as_ist_timestamp(pos["entry_time"])
 
@@ -1219,7 +1178,7 @@ def maybe_check_exit(symbol: str, tick_time: dt.datetime) -> None:
 
         exit_inflight.add(symbol)
 
-    EXIT_EXECUTOR.submit(_exit_worker, symbol,bucket)
+    EXIT_EXECUTOR.submit(_exit_worker, symbol, bucket)
 
 
 # ============================================================
@@ -1269,7 +1228,7 @@ def on_message(*args) -> None:
             int(cumulative_volume) if cumulative_volume is not None else None
         )
 
-        update_live_candle(
+        closed_bucket = update_live_candle(          # CLOSED-CANDLE: capture result
             symbol=symbol,
             ltp=ltp,
             cumulative_day_volume=cumulative_volume,
@@ -1278,7 +1237,10 @@ def on_message(*args) -> None:
 
         check_sl_tp(symbol, ltp)
         maybe_check_exit(symbol, tick_time)
-        schedule_signal_eval(symbol)
+
+        # CLOSED-CANDLE: evaluate signal only when a 15m candle just closed.
+        if closed_bucket is not None:
+            schedule_candle_close_eval(symbol, closed_bucket, ltp)
 
     except Exception as exc:
         print(f"[WS MESSAGE ERROR] {symbol}: {exc}")
@@ -1376,7 +1338,7 @@ def main() -> None:
     global DHAN_SYMBOLS, SECURITY_TO_SYMBOL
 
     print("=" * 65)
-    print("DHAN WEBSOCKET LIVE 15-MINUTE STRATEGY (patched)")
+    print("DHAN WEBSOCKET LIVE 15-MINUTE STRATEGY (closed-candle signals)")
     print(f"Started: {get_ist_now():%Y-%m-%d %H:%M:%S %Z}")
     print(f"Symbols: {len(DHAN_SYMBOLS)}")
     print(f"Paper mode: {PAPER_MODE}")
