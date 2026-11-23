@@ -1079,6 +1079,71 @@ def get_5min_candles(
 
 def check_exit_for_symbol(symbol: str, bucket) -> None:
     """
+    Intrabar exit condition:
+      BUY  exits when current 5m Low  < previous 5m Low
+      SELL exits when current 5m High > previous 5m High
+    The current (still forming) candle is included, so the exit
+    triggers as soon as the level is breached, not at candle close.
+    """
+    info = DHAN_SYMBOLS[symbol]
+    with state_lock:
+        positions = [
+            (key, pos)
+            for key, pos in open_positions.items()
+            if pos["symbol"] == symbol
+        ]
+    if not positions:
+        exit_retry_at.pop(symbol, None)
+        return
+
+    earliest_entry = min(pos["entry_time"] for _, pos in positions)
+
+    try:
+        candles = get_5min_candles(
+            security_id=info["security_id"],
+            exchange_segment=info.get("exchange_segment", "NSE_EQ"),
+            instrument_type=info.get("instrument", "EQUITY"),
+            start_date=earliest_entry,
+            end_date=get_ist_now(),
+        )
+    except Exception as exc:
+        print(f"[EXIT CHECK ERROR] {symbol}: {exc}")
+        exit_retry_at[symbol] = time.monotonic() + EXIT_RETRY_SECONDS
+        return
+
+    if candles.empty:
+        exit_retry_at[symbol] = time.monotonic() + EXIT_RETRY_SECONDS
+        return
+
+    candles = candles.sort_values("Datetime").reset_index(drop=True)
+
+    for position_key, pos in positions:
+        entry_ts = as_ist_timestamp(pos["entry_time"])
+        side = pos["side"].upper()
+
+        for i in range(1, len(candles)):
+            candle_time = as_ist_timestamp(candles.loc[i, "Datetime"])
+            if candle_time <= entry_ts:
+                continue
+
+            prev_high = float(candles.loc[i - 1, "High"])
+            prev_low = float(candles.loc[i - 1, "Low"])
+            curr_high = float(candles.loc[i, "High"])
+            curr_low = float(candles.loc[i, "Low"])
+
+            breach_level = None
+            if side == "BUY" and curr_low < prev_low:
+                breach_level = prev_low
+            elif side == "SELL" and curr_high > prev_high:
+                breach_level = prev_high
+
+            if breach_level is not None:
+                price = latest_price(symbol, breach_level)
+                exit_position(position_key, price, get_ist_now(), "PREV HL BREAK")
+                break
+'''
+def check_exit_for_symbol(symbol: str, bucket) -> None:
+    """
     Original exit condition preserved:
       BUY exits when current 5m Close < previous 5m Open
       SELL exits when current 5m Close > previous 5m Open
@@ -1138,7 +1203,7 @@ def check_exit_for_symbol(symbol: str, bucket) -> None:
                 price = latest_price(symbol, curr_close)
                 exit_position(position_key, price, get_ist_now(), "5m RULE")
                 break
-
+'''
 
 def _exit_worker(symbol: str, bucket) -> None:
     try:
